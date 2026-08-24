@@ -1,0 +1,205 @@
+# DomainCraft Bridge Certification (TypeScript client layer) — CI Template
+#
+# The layers-above-core rung of the TCK pyramid for the TypeScript family. The
+# thin language core is certified ONCE by the per-language TCK that lives in
+# the `domaincraft-bridge-ts-core` repository; this workflow certifies what
+# `ts-client` adds on top of it: the Zod schemas, the fetch/JWT client, the
+# ApiError contract — and that the generated client's wire format is ACCEPTED
+# by a real, already-certified backend. Two jobs:
+#
+#   1. `certify` — generates the composed client (ts-client + ts-core) from
+#      kitchen-sink.yaml, then runs this repo's client TCK:
+#        * `tsc --noEmit`  — the client type-contract (type-contract-client.ts):
+#          create/update/patch projections, merge-patch restrictions.
+#        * `vitest run`    — runtime.client.test.ts (mocked fetch: JWT header,
+#          ApiError 409/429, zodFieldErrors) + interop.test.ts (SKIPPED — no
+#          API_URL in this job, so no backend needed).
+#
+#   2. `interop` — starts the csharp-restful backend via Docker Compose and
+#      runs interop.test.ts (setup → login → CRUD → filter/sort/include
+#      round-trips → error mapping) against it. The csharp-restful backend is
+#      certified by the backend TCK, so this is a cross-bridge interop check,
+#      not a self-consistency check.
+#
+# Framework adapters (react-rest, ...) compose on ts-client + ts-core and add
+# only a `tsc --noEmit` glue smoke on top of this.
+name: Bridge Certification (TypeScript client layer)
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  # Core repo ref to checkout (branch or tag). Pin to a release tag to lock the
+  # TCK version, or leave `main` to always run against the latest.
+  CORE_VERSION: main
+  # Port the certified backend listens on. Must match `project.deploy.port` in
+  # kitchen-sink.yaml.
+  API_PORT: "9000"
+
+jobs:
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Checkout the bridge (templates + tck/) under test.
+      - name: Checkout Bridge
+        uses: actions/checkout@v4
+
+      # 2. Checkout the base bridge (`extends: ts-core` resolves via the
+      #    monorepo sibling fallback — the directory name must equal the
+      #    registry repo name).
+      - name: Checkout ts-core
+        uses: actions/checkout@v4
+        with:
+          repository: DomainCraft/domaincraft-bridge-ts-core
+          path: domaincraft-bridge-ts-core
+          ref: ${{ env.CORE_VERSION == 'main' && 'main' || env.CORE_VERSION }}
+
+      # 3. Checkout the DomainCraft core (kitchen-sink.yaml + CLI).
+      - name: Checkout Core
+        uses: actions/checkout@v4
+        with:
+          repository: DomainCraft/DomainCraft
+          path: core
+          ref: ${{ env.CORE_VERSION }}
+
+      # 4. Set up Go (the core requires Go 1.25+, see go.mod).
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      # 5. Install the CLI from the matching release.
+      - name: Install DomainCraft CLI
+        run: |
+          go install github.com/DomainCraft/DomainCraft/cmd/domaincraft@${{ env.CORE_VERSION == 'main' && 'latest' || env.CORE_VERSION }}
+
+      # 6. Node for tsc + vitest.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 7. Generate the composed client (ts-core + ts-client) from kitchen-sink.
+      - name: Generate Code
+        run: |
+          domaincraft generate \
+            --domain ./core/compliance-suite/kitchen-sink.yaml \
+            --bridge . \
+            --output ./tck/generated \
+            --non-interactive
+
+      # 8. Install TCK deps (vitest + zod).
+      - name: Install TCK Dependencies
+        working-directory: ./tck
+        run: npm install
+
+      # 9. Static client type-contract (compiles generated code + @ts-expect-error negatives).
+      - name: Type Contract
+        working-directory: ./tck
+        run: npx tsc --noEmit
+
+      # 10. Runtime client contract (interop.test.ts is skipped: no API_URL).
+      - name: Runtime Contract
+        working-directory: ./tck
+        run: npx vitest run
+
+  interop:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Checkout the bridge under test (ts-client templates + tck/).
+      - name: Checkout Bridge
+        uses: actions/checkout@v4
+
+      # 2. Checkout the base bridge (sibling fallback for `extends: ts-core`).
+      - name: Checkout ts-core
+        uses: actions/checkout@v4
+        with:
+          repository: DomainCraft/domaincraft-bridge-ts-core
+          path: domaincraft-bridge-ts-core
+          ref: ${{ env.CORE_VERSION == 'main' && 'main' || env.CORE_VERSION }}
+
+      # 3. Checkout the DomainCraft core (kitchen-sink.yaml + CLI).
+      - name: Checkout Core
+        uses: actions/checkout@v4
+        with:
+          repository: DomainCraft/DomainCraft
+          path: core
+          ref: ${{ env.CORE_VERSION }}
+
+      # 4. Checkout the certified backend bridge. The interop suite runs the
+      #    ts-client client against the csharp-restful output, which the backend
+      #    TCK has already certified end-to-end.
+      - name: Checkout Certified Backend Bridge
+        uses: actions/checkout@v4
+        with:
+          repository: DomainCraft/domaincraft-bridge-csharp
+          path: csharp-bridge
+          ref: main
+
+      # 5. Set up Go.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      # 6. Install the CLI.
+      - name: Install DomainCraft CLI
+        run: |
+          go install github.com/DomainCraft/DomainCraft/cmd/domaincraft@${{ env.CORE_VERSION == 'main' && 'latest' || env.CORE_VERSION }}
+
+      # 7. Node for vitest.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 8. Generate the ts-client client (composed with ts-core) under test.
+      - name: Generate ts-client client
+        run: |
+          domaincraft generate \
+            --domain ./core/compliance-suite/kitchen-sink.yaml \
+            --bridge . \
+            --output ./tck/generated \
+            --non-interactive
+
+      # 9. Generate the certified backend from the same domain model.
+      - name: Generate Certified Backend
+        run: |
+          domaincraft generate \
+            --domain ./core/compliance-suite/kitchen-sink.yaml \
+            --bridge ./csharp-bridge \
+            --output ./test-app \
+            --non-interactive
+
+      # 10. Build & start the generated application (API + DB).
+      - name: Start Backend
+        working-directory: ./test-app
+        run: |
+          docker compose up -d --build
+          timeout 120 bash -c 'until [[ "$(curl -s -o /dev/null -w ''%{http_code}'' http://localhost:${API_PORT}/health/ready)" == "200" ]]; do sleep 2; done' || {
+            echo "::error::API did not become healthy in time"
+            docker compose logs --tail=100 api || true
+            exit 1
+          }
+
+      # 11. Install TCK deps (vitest + zod).
+      - name: Install TCK Dependencies
+        working-directory: ./tck
+        run: npm install
+
+      # 12. Run the interop suite against the live backend. API_URL is what
+      #     enables interop.test.ts (it is skipped when unset).
+      - name: Run Interop TCK
+        working-directory: ./tck
+        env:
+          API_URL: http://localhost:${{ env.API_PORT }}
+        run: npx vitest run interop.test.ts
+
+      # 13. Cleanup.
+      - name: Stop Backend
+        if: always()
+        working-directory: ./test-app
+        run: docker compose down --volumes --remove-orphans
