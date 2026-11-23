@@ -1,5 +1,12 @@
 # DomainCraft TypeScript Client — `ts-client`
 
+[![Moved to the monorepo](https://img.shields.io/badge/moved%20to-Fellmonkey%2FDomainCraft-orange)](https://github.com/Fellmonkey/DomainCraft)
+> This bridge is now developed at Fellmonkey/DomainCraft under bridges/(family)/(layer).
+> 
+> This repository is frozen and kept only so existing owner/repo references keep working.
+> 
+> Use domaincraft generate --bridge (bridge-id) from the new release.
+> 
 The client layer. Validation, fetch and CRUD — on top of the language core.
 
 `ts-client` builds on the thin `ts-core` and adds the code every TypeScript app actually imports — Zod schemas, a JWT fetch client and per-entity CRUD. No types (those come from `ts-core`), no hooks (those are `framework`).
